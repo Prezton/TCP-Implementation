@@ -8,9 +8,13 @@ connection = dict()
 BUFSIZE = 1024
 lock = threading.Lock()
 
+# Q1: do we need to do 3-way handshake to establish a connection?
+# Q2: How do we handle multiple requests at the same time? e.g node2 and node4 asks for same file at the same time?
+# Q3: what indeed does the simultaneous transfer mean?
+
 class Tcpserver:
     def __init__(self):
-        # {port: ACK number}
+        # {port: ACK number}, indicates a connection has been established
         self.connection = dict()
 
     def set_config(self, path):
@@ -49,8 +53,14 @@ class Tcpserver:
         target_name = target["hostname"]
         target_addr = socket.gethostbyname(target_name)
         ADDR = (target_addr, target_port)
-        file_name = file_name.encode()
-        self.s.sendto(file_name, ADDR)
+        connect_thread = threading.Thread(target=self.establish_connection, args=(ADDR, ))
+        connect_thread.daemon = True
+        connect_thread.start()
+        msg_to_send = "ASKFILE" + "_" + str(self.port) + "_" + file_name
+        # SEND FILE NAME FIRST
+        if self.connection[ADDR]:
+            print("CONNECTION SUCCESS")
+            self.s.sendto(msg_to_send.encode(), ADDR)
 
     def send_file(self):
         pass
@@ -78,10 +88,16 @@ class Tcpserver:
         if (msg.split("_")[0] == "ACK"):
             # print("RECEIVED FROM LOCAL HOST")
             self.handle_ack(msg)
-        else:
+        elif (msg.split("_")[0] == "ASKFILE"):
             self.handle_file(msg)
 
-
+    def establish_connection(self, addr):
+        dt = datetime.now()
+        syn_num = datetime.timestamp(dt)
+        self.s.sendto(syn_num.encode(), addr)
+        while not self.connection[addr]:
+            continue
+        self.s.sendto((self.connection[addr] + 1).encode(), addr)
 
 if __name__ == "__main__":
     path = sys.argv[1]
