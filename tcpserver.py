@@ -11,6 +11,8 @@ connection = dict()
 BUFSIZE = 1024
 lock = threading.Lock()
 
+class Node:
+    def __init__(self):
 
 # Q1: do we need to do 3-way handshake to establish a connection?
 # Q2: How do we handle multiple requests at the same time? e.g node2 and node4 asks for same file at the same time?
@@ -20,6 +22,7 @@ class Tcpserver:
     def __init__(self):
         # {port: ACK number}, indicates a connection has been established
         self.connection = dict()
+        self.latest_syn_num = dict()
 
     def set_config(self, path):
         with open(path, "r") as f:
@@ -62,11 +65,15 @@ class Tcpserver:
         # As a client, initiate a connection
         if ADDR[1] not in self.connection:
             self.establish_connection(ADDR)
-        msg_to_send = "ASKFILE" + "_" + str(self.port) + "_" + file_name
+
+        # wait for connection to get established
+        while ADDR[1] not in self.connection:
+            continue
+
         # SEND FILE NAME FIRST
-        if ADDR[1] in self.connection:
-            print("CONNECTION SUCCESS")
-            self.s.sendto(msg_to_send.encode(), ADDR)
+        filename_to_send = "ASKFILE" + "_" + file_name
+        # self.s.sendto()
+        print(filename_to_send)
 
     def send_file(self):
         pass
@@ -87,10 +94,18 @@ class Tcpserver:
         print("HANDLE ACK")
         lock.acquire()
         if addr[1] not in self.connection:
-            self.connection[addr[1]] = addr
-            lock.release()
-            print("CONNECTION ESTABLISHED")
-            return True
+            if addr[1] in self.latest_syn_num:
+                if int(msg.split("_")[1]) == self.latest_syn_num[addr[1]] + 1:
+                    self.connection[addr[1]] = addr
+                    lock.release()
+                    print("CONNECTION ESTABLISHED")
+                    return True
+                else:
+                    print("ACK AND SYNC DOES NOT MATCH")
+            else:
+                print("SYNC NUM NOT RECORDED, THIS SHOULD NOT HAPPEN")
+        else:
+            print("CONNECTION ALREADY ESTABLISHED")
         lock.release()
 
     def handle_file(self, msg):
@@ -100,6 +115,11 @@ class Tcpserver:
         print("SEND SYNC")
         sync_num = random.randint(201, 301)
         sync_msg = "SYNC" + "_" + str(sync_num)
+
+        # addr[1] is a integer!
+        # print("TYPE IS: ", type(addr[1]))
+
+        self.latest_syn_num[addr[1]] = sync_num
         self.s.sendto(sync_msg.encode(), addr)
 
     def handle_sync(self, msg, addr):
@@ -110,7 +130,6 @@ class Tcpserver:
         while True:
             print("LISTENING ON ", self.port)
             msg_addr = self.s.recvfrom(BUFSIZE)
-            print("GOT MSG!!!")
 
             message_handle_thread = threading.Thread(target=self.message_handle, args=(msg_addr,))
             message_handle_thread.daemon = True
@@ -120,7 +139,7 @@ class Tcpserver:
         msg = msg_addr[0]
         client_addr = msg_addr[1]
         msg = msg.decode()
-        print("msg is: ", msg)
+        print("MESSAGE IS: ", msg)
         if (msg.split("_")[0] == "ACK"):
             self.handle_ack(msg, client_addr)
         # As a client, receives ack and syn message
@@ -134,6 +153,7 @@ class Tcpserver:
     def establish_connection(self, addr):
         sync_num = random.randint(100, 200)
         sync_msg = "ESTABLISH" + "_" + str(sync_num)
+        self.latest_syn_num[addr[1]] = sync_num
         self.s.sendto(sync_msg.encode(), addr)
         print("ESTABLISH REQ SENT", addr)
 
@@ -150,6 +170,6 @@ if __name__ == "__main__":
     client_thread.daemon = True
     client_thread.start()
 
-    while True:
+    while True:pro
         file_name = input()
         server.request_file(file_name)
