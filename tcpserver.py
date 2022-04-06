@@ -8,11 +8,13 @@ import random
 
 # Stores connection information to handle different nodes
 connection = dict()
-BUFSIZE = 1024
+BUFSIZE = 10240
 lock = threading.Lock()
 
 class Node:
     def __init__(self):
+        self.seq = -1
+        self.ack = -1
 
 # Q1: do we need to do 3-way handshake to establish a connection?
 # Q2: How do we handle multiple requests at the same time? e.g node2 and node4 asks for same file at the same time?
@@ -62,18 +64,15 @@ class Tcpserver:
         target_addr = socket.gethostbyname(target_name)
         ADDR = (target_addr, target_port)
 
-        # As a client, initiate a connection
-        if ADDR[1] not in self.connection:
-            self.establish_connection(ADDR)
+        node_key = (target_addr, target_port, file_name)
 
-        # wait for connection to get established
-        while ADDR[1] not in self.connection:
-            continue
+        # As a client, initiate a connection and SEND FILE NAME FIRST
+        if node_key not in self.connection:
+            self.establish_connection(node_key)
 
-        # SEND FILE NAME FIRST
-        filename_to_send = "ASKFILE" + "_" + file_name
-        # self.s.sendto()
-        print(filename_to_send)
+
+
+
 
     def send_file(self):
         pass
@@ -81,7 +80,7 @@ class Tcpserver:
     def send_ack(self, msg, addr):
         print("SEND ACK")
         flag = msg.split("_")[0]
-        if flag == "ESTABLISH" or "SYNC":
+        if flag == "SYNC":
             sync_num = int(msg.split("_")[1])
             ack_num = sync_num + 1
             ack_msg = "ACK" + "_" + str(ack_num)
@@ -92,6 +91,8 @@ class Tcpserver:
 
     def handle_ack(self, msg, addr):
         print("HANDLE ACK")
+        filename =
+        node_key = msg.split("_")
         lock.acquire()
         if addr[1] not in self.connection:
             if addr[1] in self.latest_syn_num:
@@ -124,7 +125,8 @@ class Tcpserver:
 
     def handle_sync(self, msg, addr):
         print("HANDLE SYNC")
-        self.send_ack(msg, addr)
+        # self.send_ack(msg, addr)
+        pass
 
     def client_handle(self):
         while True:
@@ -140,22 +142,35 @@ class Tcpserver:
         client_addr = msg_addr[1]
         msg = msg.decode()
         print("MESSAGE IS: ", msg)
-        if (msg.split("_")[0] == "ACK"):
+        flag = msg.split("_")[0]
+        # As a server, receives ACK and continues to send files
+        if (flag == "ACK"):
             self.handle_ack(msg, client_addr)
-        # As a client, receives ack and syn message
-        elif (msg.split("_")[0] == "SYNC"):
+        # As a client, receives syn message and save file locally
+        elif (flag == "SYNC"):
             self.handle_sync(msg, client_addr)
-        # As a server, passively received establish sync signal
-        elif (msg.split("_")[0] == "ESTABLISH"):
-            self.send_ack(msg, client_addr)
-            self.send_sync(client_addr)
+        # As a server, passively received establish signal with the file name
+        elif (flag == "ESTABLISH"):
+            self.handle_file_req(msg, client_addr)
+            # Send the first chunk
+            self.send_file(msg, client_addr)
 
-    def establish_connection(self, addr):
+    def handle_file_req(self, msg, client_addr):
+        filename = msg.split("_")[0]
+        node_key = (client_addr[0], client_addr[1], filename)
+        print("NODE KEY IS: ", node_key)
+        self.connection[node_key] = Node()
+        print("SERVER RECEIVED FILE NAME IS: ", filename)
+
+
+    def establish_connection(self, node_key):
         sync_num = random.randint(100, 200)
-        sync_msg = "ESTABLISH" + "_" + str(sync_num)
-        self.latest_syn_num[addr[1]] = sync_num
+        sync_msg = "ESTABLISH" + "_" + node_key[2]
+        # self.latest_syn_num[addr[1]] = sync_num
+        addr = (node_key[0], node_key[1])
         self.s.sendto(sync_msg.encode(), addr)
-        print("ESTABLISH REQ SENT", addr)
+        print("ESTABLISH REQ SENT, NODE KEY IN CLIENT IS: ", node_key)
+        self.connection[node_key] = Node()
 
 
 if __name__ == "__main__":
