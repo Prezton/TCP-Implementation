@@ -8,9 +8,9 @@ import random
 
 # Stores connection information to handle different nodes
 connection = dict()
-BUFSIZE = 20480
+BUFSIZE = 2048
 lock = threading.Lock()
-CHUNKSIZE = 10240
+CHUNKSIZE = 1024
 HEADER_LENGTH = 32
 ESTABLISH_FLAG = 3
 SYNC_FLAG = 4
@@ -21,11 +21,12 @@ FIN_FLAG = 6
 
 class Connection:
     def __init__(self):
-        self.sync_num = -1
-        self.ack_num = -1
+        self.sync_num = -3
+        self.ack_num = -3
         self.filename = None
-        self.port = -1
+        self.port = -3
         self.fileobject = None
+        self.prev_msg = None
 
 # Q1: How do I have a fixed length header?
 # Q2: does socket.recvfrom(BUFSIZE) return bytes sent by different source nodes?
@@ -79,15 +80,15 @@ class Tcpserver:
         flag = int(header[0])
         # As a server, receives ACK and continues to send files
         if (flag == 5):
-            self.handle_ack()
-            self.send_file(client_addr)
+            # self.handle_ack()
+            self.send_file(header, client_addr)
         # As a client, receives syn message and save file locally
         elif (flag == 4):
             self.handle_file(header, msg, client_addr)
         # As a server, passively received establish signal with the file name
         elif (flag == 3):
             self.handle_establish_req(msg, client_addr)
-            self.send_file(client_addr)
+            self.send_file(header, client_addr)
         elif (flag == 6):
             self.end_transmission(client_addr)
 
@@ -99,10 +100,14 @@ class Tcpserver:
         self.connection[node_key] = Connection()
         self.connection[node_key].filename = filename
 
-    def send_file(self, client_addr):
+    def send_file(self, header, client_addr):
         # print("SEND FILE")
         node_key = client_addr[1]
         conn = self.connection[node_key]
+        if not self.handle_ack(header, client_addr):
+            # RESEND
+            self.s.sendto(conn.prev_msg, client_addr)
+            print("TRIGGERED")
         filename = conn.filename
         if not conn.fileobject:
             f = open(filename, "rb")
@@ -126,10 +131,20 @@ class Tcpserver:
         header += sync_num
         # print("SEND_FILE(): HEADER IS: ", header)
         msg_to_send = header.encode() + bytes
+        conn.prev_msg = msg_to_send
         self.s.sendto(msg_to_send, client_addr)
 
-    def handle_ack(self):
-        pass
+    def handle_ack(self, header, client_addr):
+        # print("handle_ack")
+        # print("client addr", client_addr)
+        conn = self.connection[client_addr[1]]
+        prev_sync = conn.sync_num
+        if prev_sync == -3:
+            return True
+        ack = int(header[1:])
+        if ack == (prev_sync + 1):
+            return True
+        return False
 
 # CLIENT METHODS BELOW, SERVER METHODS ABOVE
 
@@ -172,7 +187,7 @@ class Tcpserver:
         ack_num = str(sync_num + 1)
         node_key = client_addr[1]
         conn = self.connection[node_key]
-        filename = conn.filename
+        filename = "received" + conn.filename
         if not conn.fileobject:
             f = open(filename, "wb")
             conn.fileobject = f
