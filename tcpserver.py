@@ -8,13 +8,14 @@ import random
 
 # Stores connection information to handle different nodes
 connection = dict()
-BUFSIZE = 1024
+BUFSIZE = 20480
 lock = threading.Lock()
-CHUNKSIZE = 1024
+CHUNKSIZE = 10240
 HEADER_LENGTH = 32
 ESTABLISH_FLAG = 3
 SYNC_FLAG = 4
 ACK_FLAG = 5
+FIN_FLAG = 6
 
 
 
@@ -61,7 +62,7 @@ class Tcpserver:
 
     def client_handle(self):
         while True:
-            print("LISTENING ON ", self.port)
+            # print("LISTENING ON ", self.port)
             msg_addr = self.s.recvfrom(BUFSIZE)
             self.message_handle(msg_addr)
 
@@ -70,34 +71,36 @@ class Tcpserver:
             # message_handle_thread.start()
 
     def message_handle(self, msg_addr):
+        # ESTABLISH == 3, SYNC == 4, ACK == 5
         msg = msg_addr[0]
         client_addr = msg_addr[1]
-        msg_decoded = msg.decode()
-        print("MESSAGE IS: ", msg_decoded)
-        flag = msg_decoded.split(";;")[0]
+        header = msg[:32].decode()
+        # print("RECEIVED MSG'S HEADER IS: ", header)
+        flag = int(header[0])
         # As a server, receives ACK and continues to send files
-        if (flag == "ACK"):
+        if (flag == 5):
             self.handle_ack()
             self.send_file(client_addr)
+        # As a client, receives syn message and save file locally
+        elif (flag == 4):
+            self.handle_file(header, msg, client_addr)
         # As a server, passively received establish signal with the file name
-        elif (flag == "ESTABLISH"):
+        elif (flag == 3):
             self.handle_establish_req(msg, client_addr)
             self.send_file(client_addr)
-        # As a client, receives syn message and save file locally
-        elif (flag == "SYNC"):
-            self.handle_file()
+        elif (flag == 6):
+            self.end_transmission(client_addr)
 
     def handle_establish_req(self, msg, client_addr):
-        msg = msg.decode()
-        filename = msg.split(";;")[1]
+        filename = msg[32:].decode()
         node_key = client_addr[1]
-        print("NODE KEY IS: ", node_key, "TYPE IS: ", type(node_key))
-        print("SERVER RECEIVED FILE NAME IS: ", filename)
+        # print("NODE KEY IS: ", node_key, "TYPE IS: ", type(node_key))
+        # print("SERVER RECEIVED FILE NAME IS: ", filename)
         self.connection[node_key] = Connection()
         self.connection[node_key].filename = filename
 
     def send_file(self, client_addr):
-        print("SEND FILE")
+        # print("SEND FILE")
         node_key = client_addr[1]
         conn = self.connection[node_key]
         filename = conn.filename
@@ -107,9 +110,21 @@ class Tcpserver:
         else:
             f = conn.fileobject
         bytes = f.read(CHUNKSIZE)
+
+        if not bytes:
+            header = str(FIN_FLAG)
+            header += ("0" * 31)
+            self.s.sendto(header.encode(), client_addr)
+            return
+
         conn.sync_num = f.tell()
-        print("SYNC NUMBER IS: ", conn.sync_num)
-        header = "SYNC" + ";;" + str(conn.sync_num)
+        sync_num = str(conn.sync_num)
+
+        header = str(SYNC_FLAG)
+        tmp = 32 - len(header) - len(sync_num)
+        header += ("0" * tmp)
+        header += sync_num
+        # print("SEND_FILE(): HEADER IS: ", header)
         msg_to_send = header.encode() + bytes
         self.s.sendto(msg_to_send, client_addr)
 
@@ -120,14 +135,15 @@ class Tcpserver:
 
     def establish_connection(self, addr, file_name):
         sync_num = random.randint(100, 200)
-        header = ""
-        req_msg = "ESTABLISH" + ";;" + file_name
+        header = str(ESTABLISH_FLAG)
+        header += ("0" * 31)
+        req_msg = header + file_name
         node_key = addr[1]
         self.connection[node_key] = Connection()
         self.connection[node_key].filename = file_name
         # self.latest_syn_num[addr[1]] = sync_num
         self.s.sendto(req_msg.encode(), addr)
-        print("ESTABLISH REQ SENT, NODE KEY IN CLIENT IS: ", node_key, "TYPE IS: ", type(node_key))
+        # print("ESTABLISH REQ SENT, NODE KEY IN CLIENT IS: ", node_key, "TYPE IS: ", type(node_key))
 
 
     def request_file(self, file_name):
@@ -135,7 +151,7 @@ class Tcpserver:
         for peer in self.peer_info:
             if file_name in peer["content_info"]:
                 target = peer
-                print("FILE EXIST ON: ", peer["port"])
+                # print("FILE EXIST ON: ", peer["port"])
         if not target:
             print("DOES NOT EXIST IN PEER NODES")
             return
@@ -150,10 +166,33 @@ class Tcpserver:
         if node_key not in self.connection:
             self.establish_connection(ADDR, file_name)
 
-    def handle_file(self, msg):
-        pass
+    def handle_file(self, header, msg, client_addr):
+        msg = msg[32:]
+        sync_num = int(header[1:])
+        ack_num = str(sync_num + 1)
+        node_key = client_addr[1]
+        conn = self.connection[node_key]
+        filename = conn.filename
+        if not conn.fileobject:
+            f = open(filename, "wb")
+            conn.fileobject = f
+        else:
+            f = conn.fileobject
+        f.write(msg)
+
+        header = str(ACK_FLAG)
+        tmp = 32 - len(header) - len(ack_num)
+        header = header + "0" * tmp + ack_num
+        # print("HANDLE_FILE() CLIENT ACK NUM IS:", header)
+        self.s.sendto(header.encode(), client_addr)
 
 
+    def end_transmission(self, client_addr):
+        node_key = client_addr[1]
+        conn = self.connection[node_key]
+        f = conn.fileobject
+        f.close()
+        del self.connection[node_key]
 
 
 
@@ -163,7 +202,7 @@ if __name__ == "__main__":
     server.set_config(path)
     # server.print_args()
     server.create_socket()
-    print("SOCKET: ", (server.s != None))
+    # print("SOCKET: ", (server.s != None))
 
     client_thread = threading.Thread(target=server.client_handle)
     client_thread.daemon = True
