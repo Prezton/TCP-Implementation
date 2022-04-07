@@ -17,6 +17,7 @@ SYNC_FLAG = 4
 ACK_FLAG = 5
 FIN_FLAG = 6
 
+RESEND_FLAG = False
 
 
 class Connection:
@@ -26,7 +27,6 @@ class Connection:
         self.filename = None
         self.port = -3
         self.fileobject = None
-        self.prev_msg = None
 
 # Q1: How do I have a fixed length header?
 # Q2: does socket.recvfrom(BUFSIZE) return bytes sent by different source nodes?
@@ -104,11 +104,32 @@ class Tcpserver:
         # print("SEND FILE")
         node_key = client_addr[1]
         conn = self.connection[node_key]
-        if not self.handle_ack(header, client_addr):
-            # RESEND
-            self.s.sendto(conn.prev_msg, client_addr)
-            print("TRIGGERED")
         filename = conn.filename
+
+        if not self.handle_ack(header, client_addr):
+            print("RECEIVED DUPLICATIVE ACK")
+            f = conn.fileobject
+            f.seek(conn.ack_num - 1)
+            bytes = f.read(CHUNKSIZE)
+            if not bytes:
+                header = str(FIN_FLAG)
+                header += ("0" * 31)
+                self.s.sendto(header.encode(), client_addr)
+                return
+            else:
+                conn.sync_num = f.tell()
+                sync_num = str(conn.sync_num)
+
+                header = str(SYNC_FLAG)
+                tmp = 32 - len(header) - len(sync_num)
+                header += ("0" * tmp)
+                header += sync_num
+                # print("SEND_FILE(): HEADER IS: ", header)
+                msg_to_send = header.encode() + bytes
+                self.s.sendto(msg_to_send, client_addr)
+                return
+
+
         if not conn.fileobject:
             f = open(filename, "rb")
             conn.fileobject = f
@@ -131,20 +152,24 @@ class Tcpserver:
         header += sync_num
         # print("SEND_FILE(): HEADER IS: ", header)
         msg_to_send = header.encode() + bytes
-        conn.prev_msg = msg_to_send
         self.s.sendto(msg_to_send, client_addr)
 
     def handle_ack(self, header, client_addr):
-        # print("handle_ack")
-        # print("client addr", client_addr)
+        # Judge if ack is duplicative
         conn = self.connection[client_addr[1]]
-        prev_sync = conn.sync_num
-        if prev_sync == -3:
+        current_ack = int(header[1:])
+        prev_ack = conn.ack_num
+        print("received ack: ", current_ack, "prev ack: ", prev_ack)
+
+        if conn.ack_num == -3:
+            conn.ack_num = current_ack
             return True
-        ack = int(header[1:])
-        if ack == (prev_sync + 1):
-            return True
-        return False
+        if prev_ack == current_ack:
+            conn.ack_num = current_ack
+            return False
+        conn.ack_num = current_ack
+        return True
+
 
 # CLIENT METHODS BELOW, SERVER METHODS ABOVE
 
@@ -187,7 +212,21 @@ class Tcpserver:
         ack_num = str(sync_num + 1)
         node_key = client_addr[1]
         conn = self.connection[node_key]
-        filename = "received" + conn.filename
+
+        # Make judgement on out-of-order sync number
+        prev_sync = conn.sync_num
+        prev_ack = conn.ack_num
+        print("RECEIVED SYNC IS: ", sync_num, "PREV SYNC IS:", prev_sync)
+        if prev_sync != -3 and sync_num > (prev_sync + CHUNKSIZE):
+            # Send duplicative ACK
+            print("SEND DUPLICATIVE ACK: ", prev_ack)
+            header = str(ACK_FLAG)
+            tmp = 32 - len(header) - len(prev_ack)
+            header = header + "0" * tmp + prev_ack
+            self.s.sendto(header.encode(), client_addr)
+            return
+
+        filename = conn.filename
         if not conn.fileobject:
             f = open(filename, "wb")
             conn.fileobject = f
@@ -200,6 +239,8 @@ class Tcpserver:
         header = header + "0" * tmp + ack_num
         # print("HANDLE_FILE() CLIENT ACK NUM IS:", header)
         self.s.sendto(header.encode(), client_addr)
+        conn.sync_num = sync_num
+        conn.ack_num = sync_num + 1
 
 
     def end_transmission(self, client_addr):
@@ -217,7 +258,7 @@ if __name__ == "__main__":
     server.set_config(path)
     # server.print_args()
     server.create_socket()
-    # print("SOCKET: ", (server.s != None))
+    print("SOCKET: ", (server.s != None))
 
     client_thread = threading.Thread(target=server.client_handle)
     client_thread.daemon = True
